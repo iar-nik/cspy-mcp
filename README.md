@@ -1,0 +1,457 @@
+﻿# MCP Thrift Server (Python)
+
+This project runs an MCP server that talks to a Thrift backend (C-SPY style IDL) and exposes debugger capabilities as MCP tools.
+
+Licensed under the [MIT License](LICENSE).
+
+## Quick Start: Add To Your MCP Client
+
+All examples use managed mode: the MCP server spawns `CSpyServer2.exe` itself
+and auto-detects the registry port. Adjust the two paths (`CSpyServer2.exe`
+and this repo) to your machine. Install dependencies first
+(`pip install -r requirements.txt`).
+
+### Claude Code
+
+Add to `.mcp.json` in your project root (or `~/.claude.json` for user scope):
+
+```json
+{
+  "mcpServers": {
+    "cspy-debugger": {
+      "command": "python",
+      "args": ["-m", "mcp_thrift_server", "--cspyserver2", "C:\\iar\\qtarm-10.2.1\\common\\bin\\CSpyServer2.exe"],
+      "env": { "PYTHONPATH": "C:\\path\\to\\this-repo" }
+    }
+  }
+}
+```
+
+Or from the terminal:
+
+```bash
+claude mcp add cspy-debugger --env PYTHONPATH=C:\path\to\this-repo -- python -m mcp_thrift_server --cspyserver2 "C:\iar\qtarm-10.2.1\common\bin\CSpyServer2.exe"
+```
+
+### Claude Desktop
+
+Add the same `mcpServers` block to `claude_desktop_config.json`
+(Settings > Developer > Edit Config):
+
+```json
+{
+  "mcpServers": {
+    "cspy-debugger": {
+      "command": "python",
+      "args": ["-m", "mcp_thrift_server", "--cspyserver2", "C:\\iar\\qtarm-10.2.1\\common\\bin\\CSpyServer2.exe"],
+      "env": { "PYTHONPATH": "C:\\path\\to\\this-repo" }
+    }
+  }
+}
+```
+
+### VS Code Copilot
+
+Add to `.vscode/mcp.json` in your workspace (or run `MCP: Add Server` from the
+Command Palette):
+
+```json
+{
+  "servers": {
+    "cspy-debugger": {
+      "type": "stdio",
+      "command": "python",
+      "args": ["-m", "mcp_thrift_server", "--cspyserver2", "C:\\iar\\qtarm-10.2.1\\common\\bin\\CSpyServer2.exe"],
+      "cwd": "C:\\path\\to\\this-repo"
+    }
+  }
+}
+```
+
+### Connecting to an already-running backend (external mode)
+
+Replace the `--cspyserver2` argument with registry flags in any config above:
+
+```json
+"args": ["-m", "mcp_thrift_server", "--registry-host", "127.0.0.1", "--registry-port", "51926"]
+```
+
+Environment variables (`THRIFT_FILE`, `THRIFT_INCLUDE_DIRS`, ...) are only
+needed when your thrift IDLs live outside this repo; see
+[Backend Modes](#backend-modes) below.
+
+## What it provides
+
+- MCP server over `stdio` (default) or `streamable-http`
+- Managed backend mode: spawns and supervises `CSpyServer2.exe`, auto-detects
+  the registry port, and restarts the backend on failure
+- Runtime loading of the bundled `cspy.thrift` IDL via `thriftpy2`
+- Registry-aware service resolution (debugger, breakpoints, contextmanager,
+  memory, disassembly, sourcelookup, symbols, listwindow, libsupport)
+- Tools for session lifecycle, run control, breakpoints/watchpoints, stack and
+  locals inspection, memory read/write, disassembly, source lookup, symbol
+  lookup, terminal I/O capture, error taxonomy, and arbitrary debugger RPC calls
+- AI-first response envelopes with machine-readable error codes and backend
+  crash diagnostics
+
+## Prerequisites
+
+- Python 3.10+
+- An IAR toolchain installation providing `CSpyServer2.exe` (managed mode),
+  or an already-running CSpyServer2/Service Registry to connect to (external mode)
+- Thrift IDLs are bundled in this repo (`thrift/cspy.thrift` plus includes);
+  nothing extra is needed unless your IDLs live elsewhere
+
+## Setup
+
+1. Create and activate a virtual environment.
+2. Install dependencies:
+
+```powershell
+pip install -r requirements.txt
+```
+
+3. Optional: configure environment variables (see `.env.example`). With the
+   bundled thrift files, `THRIFT_FILE` and `THRIFT_INCLUDE_DIRS` are not needed;
+   the server auto-detects `thrift/cspy.thrift` and uses its directory as
+   include path.
+
+If you connect to an externally started `CSpyServer2.exe -standalone`:
+- The printed/known port may be the Service Registry, not the Debugger service itself.
+- Set `THRIFT_REGISTRY_PORT` (or pass `--registry-port`) to that registry port
+  and this bridge will auto-resolve the real `debugger` endpoint.
+
+## Backend Modes
+
+This server supports managed and external backend operation.
+
+1. `managed` (default):
+- MCP server starts `CSpyServer2.exe` itself using:
+  - executable: provided via CLI (`--cspyserver2`)
+  - args: `THRIFT_CSPYSERVER_ARGS` (default `-standalone -sockets`)
+- It parses CSpyServer2 stdout for:
+  - `Service registry running on local socket on port: <port>`
+- The detected registry port is used automatically for service resolution.
+- If the managed process is unhealthy, the server attempts restart when
+  `THRIFT_CSPYSERVER_RESTART_ON_FAILURE=1`.
+
+2. `external`:
+- Connect to an existing CSpyServer2/registry using CLI flags:
+  - `--registry-host`
+  - `--registry-port`
+  - optional `--registry-service` (default: `debugger`)
+
+## Run
+
+Managed mode (spawns CSpyServer2, auto-detects registry port):
+
+```powershell
+python -m mcp_thrift_server --cspyserver2 "C:\iar\qtarm-10.2.1\common\bin\CSpyServer2.exe"
+```
+
+Optional custom CSpyServer2 args:
+
+```powershell
+python -m mcp_thrift_server --cspyserver2 "C:\iar\qtarm-10.2.1\common\bin\CSpyServer2.exe" --cspyserver2-args "-standalone -sockets"
+```
+
+External mode (connect to an already-running backend registry):
+
+```powershell
+python -m mcp_thrift_server --registry-host 127.0.0.1 --registry-port 51926
+```
+
+The server starts in `stdio` transport mode by default. In `stdio` mode, the
+process is expected to block while waiting for an MCP client, and you should see:
+`MCP server ready (stdio). Waiting for an MCP client connection...`
+
+Simple web mode option (HTTP on localhost):
+
+```powershell
+python -m mcp_thrift_server --web --web-port 8000
+```
+
+Explicit HTTP transport via environment (use `MCP_HOST="0.0.0.0"` to listen on
+all interfaces; the server listens on the single port `MCP_PORT`):
+
+```powershell
+$env:MCP_TRANSPORT="streamable-http"
+$env:MCP_HOST="127.0.0.1"
+$env:MCP_PORT="8000"
+python -m mcp_thrift_server
+```
+
+Terminal-only health probe (starts managed CSpyServer2, parses registry port,
+prints status, exits):
+
+```powershell
+python -m mcp_thrift_server --cspyserver2 "C:\iar\qtarm-10.2.1\common\bin\CSpyServer2.exe" --probe-cspyserver2
+```
+
+## Testing (pytest)
+
+Install test dependencies:
+
+```powershell
+pip install -r requirements-dev.txt
+```
+
+Run fast unit tests (mocked backend):
+
+```powershell
+pytest -q tests/test_server_tools_unit.py
+```
+
+Run the full default suite (live tests are skipped unless enabled):
+
+```powershell
+pytest -q
+```
+
+Run live backend tests:
+
+```powershell
+pytest -q tests -m live --cspyserver2 "C:\\iar\\qtarm-10.2.1\\common\\bin\\CSpyServer2.exe"
+```
+
+Live test assets bundled in repo:
+- `tests/live_assets/launch.json`
+- `tests/live_assets/test.ewp`
+- `tests/live_assets/Debug/Exe/test.out`
+
+So `pytest -q -m live` can run without external launch/project/output files.
+You still need a working C-SPY installation/executable.
+
+One-command validation (unit + live):
+
+```powershell
+./scripts/run_validation.ps1 -CSpyServerExe "C:\iar\qtarm-10.2.1\common\bin\CSpyServer2.exe"
+```
+
+Optional launch override:
+
+```powershell
+./scripts/run_validation.ps1 -CSpyServerExe "C:\iar\qtarm-10.2.1\common\bin\CSpyServer2.exe" -LaunchJson "E:\path\to\launch.json"
+```
+
+Auto handlers are always-on defaults:
+- Some backends require `debugger.eventhandler` before configure/start succeeds.
+- Terminal I/O and exit/assert capture requires `libsupport` callbacks.
+- Keeping these handlers on by default prevents lifecycle foot-guns.
+
+Live test lifecycle expectation:
+- `debugger_configure_session(launch_json)` performs resolve + configure.
+- `debugger_start_smp_session()` must be called after configure.
+- Effective startup sequence is `resolve -> configure -> start`.
+
+## MCP tools exposed
+
+- `thrift_connection_info()`
+- `debugger_list_methods()`
+- `debugger_get_version()`
+- `debugger_is_online()`
+- `debugger_get_number_of_cores()`
+- `debugger_get_core_state(core=0)`
+- `debugger_session_status()`
+- `debugger_configure_session(launch_json)`
+- `debugger_start_smp_session()`
+- `debugger_configure_and_start_session(launch_json)`
+- `debugger_stop_session()`
+- `debugger_strict_cleanup(reset_target=False)`
+- `debugger_capabilities()`
+- `debugger_error_taxonomy()`
+- `debugger_load_module(filename)`
+- `debugger_get_modules()`
+- `debugger_register_snapshot(group="CPU Registers (ABI)", limit=64)`
+- `debugger_go()`
+- `debugger_stop()`
+- `debugger_reset()`
+- `debugger_step_over()`
+- `debugger_get_thread_list()`
+- `debugger_get_cycle_counter(core=0)`
+- `debugger_eval_expression(expression, context_json="", format=0, dereference=False)`
+- `debugger_wait_for_core_state(desired_state=0, core=0, timeout_ms=5000, poll_interval_ms=50)`
+- `debugger_go_and_wait_for_core_state(desired_state=0, core=0, timeout_ms=5000, poll_interval_ms=50)`
+- `debugger_call(method, args_json="[]")`
+- `breakpoints_get_all()`
+- `breakpoints_get(id)`
+- `breakpoints_set_from_descriptor(descriptor)`
+- `breakpoints_set_on_ule(ule, access_type=1)`
+- `breakpoints_set_on_ule_with_category(ule, access_type, category_id)`
+- `breakpoints_enable(id, enable=True)`
+- `breakpoints_remove(id)`
+- `breakpoints_recently_hit()`
+- `contextmanager_get_stack(context_json="", low=0, high=20)`
+- `contextmanager_get_stack_depth(context_json="", max_depth=256)`
+- `contextmanager_get_context_info(context_json="")`
+- `contextmanager_get_locals(context_json="")`
+- `contextmanager_get_parameters(context_json="")`
+- `symbols_list_visible(context_json="")`
+- `symbols_lookup(name, context_json="", prefix=False)`
+- `memory_read(zone_id, address, wordsize=1, bitsize=8, count=16)`
+- `memory_write_hex(zone_id, address, data_hex, wordsize=1, bitsize=8, count=None)`
+- `disassembly_disassemble_range(from_zone_id, from_address, to_zone_id, to_address, context_json="")`
+- `sourcelookup_get_source_ranges(zone_id, address)`
+- `libsupport_get_output(clear=False, max_chars=4000)`
+- `libsupport_clear_output()`
+- `libsupport_push_input(text, append_newline=False)`
+- `libsupport_request_input_binary(len)`
+- `libsupport_request_input(len)`
+- `listwindow_list_services(name_filter="listwindow")`
+- `listwindow_get_overview(service_name)`
+- `listwindow_get_rows(service_name, first_row=0, max_rows=50)`
+- `listwindow_get_notifications(clear=False)`
+
+`debugger_list_methods` returns the RPC names parsed from `cspy.thrift`.
+
+`debugger_register_snapshot` returns register metadata and values (hex and unsigned little-endian integer) for a whole register group in one call.
+
+Standard response envelope (AI-first tools):
+- The following tools return a stable envelope shape:
+  `{"ok": <bool>, "tool": <name>, "data": <payload>, "error": <object|null>}`
+- Current enveloped tools:
+  - `debugger_session_status`
+  - `debugger_configure_session`
+  - `debugger_start_smp_session`
+  - `debugger_configure_and_start_session`
+  - `debugger_stop_session`
+  - `debugger_strict_cleanup`
+  - `debugger_capabilities`
+  - `debugger_wait_for_core_state`
+  - `debugger_go_and_wait_for_core_state`
+- Timeout-style outcomes use `ok=false` with machine-readable `error.code` (for example `TIMEOUT`).
+- Use `debugger_error_taxonomy()` to discover known error codes/categories and recovery hints.
+- When available, structured error `details` may include `backend_diagnostics`
+  with managed backend crash/output context to speed up recovery decisions.
+
+Breakpoint usage notes:
+- `breakpoints_set_on_ule` is the primary creation API.
+- For code breakpoints, set `access_type=1` (fetch/execute).
+- ULE is parsed by the debugger Universal Location Expression parser.
+- Supported ULE categories:
+  - expression ULEs: `main`, `func+4`, `*ptr`
+  - absolute ULEs: `0x100`, `Memory:0x42`
+  - source ULEs (reliable full form): `{E:/path/file.c}.123.1`
+  - optional size suffix: `<ule>@<size>`
+- Source shorthand like `file.c:123` can be backend-dependent; prefer the full
+  source ULE form shown above.
+- `breakpoints_set_on_ule*` now fail explicitly if backend returns an invalid
+  breakpoint object (for example `valid=false` / `id=0`) instead of silently
+  returning it.
+- `breakpoints_set_from_descriptor` expects opaque descriptor values from
+  `breakpoints_get_all()` and is intended for round-trip restore/update,
+  not free-form descriptor construction.
+- `breakpoints_set_on_ule_with_category` category IDs can be translated by
+  backend (for example `STD_CODE` to `STD_CODE2`).
+- If breakpoint calls fail with backend transport resets, the backend session
+  may have crashed/reset; restart C-SPY and reconfigure session.
+
+AI usage notes:
+- Prefer dedicated tools over `debugger_call` when available.
+- Prefer calling `debugger_session_status()` first to confirm lifecycle/backend state before deeper operations.
+- Use `debugger_capabilities()` when you need a one-shot view of backend mode,
+  available services, and currently discoverable debugger methods.
+- For `debugger_configure_session`, pass one configuration object JSON, not the outer `{"configurations": [...]}` wrapper.
+- Required startup flow (recommended):
+  1. `debugger_configure_session(launch_json)`
+  2. `debugger_start_smp_session()`
+- One-call happy path:
+  1. `debugger_configure_and_start_session(launch_json)`
+  - In `managed` backend mode, this wrapper always performs a strict cleanup
+    first and starts from a fresh CSpyServer2 process before
+    resolve/configure/start.
+  - In managed mode, no backend session/runtime state is expected to carry
+    over between calls.
+  - In `external` backend mode, this wrapper performs best-effort handoff
+    teardown when stale/active session state is detected.
+- Equivalent low-level flow:
+  1. `debugger_call("resolveLaunchConfiguration", ...)`
+  2. `debugger_call("configureSession", ...)`
+  3. `debugger_start_smp_session()` (or `debugger_call("startSession", ...)` if applicable)
+- Important: `debugger_configure_session` does not start the session; always call
+  `debugger_start_smp_session` after configure before stack/context/breakpoint-heavy operations.
+- The MCP server enforces this lifecycle invariant for most debugger-dependent
+  tools and returns an explicit error if configure/start has not completed.
+- `debugger.eventhandler` and `libsupport` registration are handled automatically
+  by the MCP wrapper during configure/start flows; no manual registration tool call
+  is required in normal usage.
+- Stability note: `debugger_configure_session` intentionally does not call
+  `stopSession()` internally. In some backend lifecycle states, forcing
+  `stopSession()` during reconfigure can trigger backend assertions/crashes.
+  Use `debugger_stop_session()` explicitly only when you intend to tear down
+  the current session.
+- `debugger_stop_session()` remains idempotent for local lifecycle state.
+  In `managed` backend mode it also shuts down the managed CSpyServer2 process,
+  so the next startup uses a fresh backend process.
+- `debugger_strict_cleanup(reset_target=False)` is the strongest recovery tool:
+  it best-effort stops session, clears local caches/buffers, and shuts down the
+  managed backend process to restore a known-good baseline.
+- If execution state becomes inconsistent, call `debugger_reset()` before retrying start/go.
+- Common non-intrusive attach flow (read state, avoid perturbing target):
+  1. Build an attach config with:
+     - `request: "attach"`
+     - `attachToTarget: true`
+     - `download.suppressAllDownloads: true`
+     - `download.suppressProgramDownload: true`
+     - `leaveTargetRunning: true`
+  2. Call `debugger_configure_session(launch_json)`.
+  3. Call `debugger_start_smp_session()`.
+  4. Check run state first (for example `debugger_call("getCoreState", "[0]")` or stack/context).
+  5. Read registers/state directly when possible.
+  6. Only call `debugger_stop()` if state confirms the core is running and halt is required for the read.
+  7. Avoid `debugger_reset()` in attach mode unless explicitly requested.
+- Eventhandler listener timeout defaults to 3600000 ms (1 hour). Override with
+  `THRIFT_EVENTHANDLER_CLIENT_TIMEOUT_MS` if needed.
+- `debugger_call` is best for simple scalar/list arguments; nested thrift
+  structs may require dedicated wrappers. It accepts:
+  - JSON array for positional args, example: `"[123, \"abc\"]"`
+  - JSON object for keyword args, example: `"{\"sessionConfig\": {...}}"`
+- Listwindow/trace note: in standalone/headless sessions, instruction trace
+  listwindow services may not be published in ServiceRegistry. Use
+  `listwindow_list_services("")` to confirm availability before attempting row reads.
+
+## AI Playbooks
+
+These are compact, canonical flows intended for tool-using AI agents.
+
+Playbook A: Standard debug session bootstrap
+1. `debugger_configure_and_start_session(launch_json)`
+2. `debugger_session_status()`
+3. Continue only if `ok=true` and `data.started=true`.
+
+Playbook B: Safe capability probe before advanced calls
+1. `debugger_capabilities()`
+2. Inspect `data.debugger_methods`, `data.services`, and `data.errors`.
+3. Branch behavior based on discovered methods/services.
+
+Playbook C: Run and wait deterministically
+1. `debugger_go_and_wait_for_core_state(desired_state=0, core=0, timeout_ms=5000)`
+2. If `ok=false` and `error.code=="TIMEOUT"`, either retry with higher timeout or call `debugger_stop()`.
+
+Playbook D: Breakpoint round-trip
+1. `breakpoints_set_on_ule("main", 1)`
+2. `breakpoints_get_all()`
+3. Persist `descriptor` values only from `breakpoints_get_all()` for future restore.
+
+Playbook E: Failure recovery baseline
+1. `debugger_strict_cleanup(reset_target=true)`
+2. If `ok=false`, inspect `data.errors[*].details.backend_diagnostics` when present.
+3. Re-run bootstrap from Playbook A.
+
+## Notes
+
+- If your backend uses custom transports/protocols (SSL, multiplexing, framed transport variants), adapt `mcp_thrift_server/thrift_client.py`.
+- Current bridge expects socket endpoints for the final service call. Registry-discovered non-socket (named pipe) endpoints are reported as unsupported.
+
+## Quick MCP protocol smoke test
+
+This verifies MCP transport and tools/call over stdio, not only direct Python
+imports. Adjust the registry env values inside the script for your backend,
+then run:
+
+```powershell
+python smoke_test_mcp_stdio.py
+```
+
+It starts the MCP server as a stdio subprocess, lists tools, and calls
+`debugger_get_version`, `debugger_is_online`, and `debugger_list_methods`.

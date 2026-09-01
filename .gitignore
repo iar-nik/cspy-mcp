@@ -1,0 +1,6 @@
+__pycache__/
+*.py[cod]
+
+# Runtime/build artifacts from live backend testing
+CSpyServer2-ServiceRegistry.txt
+tests/live_assets/Debug/Obj/
